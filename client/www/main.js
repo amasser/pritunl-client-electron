@@ -34,7 +34,7 @@ process.on('uncaughtException', function (error) {
     buttons: ['Exit'],
     title: 'Pritunl - Process Error',
     message: 'Error occured in main process:\n\n' + errorMsg,
-  }, function() {
+  }).then(function() {
     app.quit();
   });
 });
@@ -117,7 +117,7 @@ var checkService = function(callback) {
               title: 'Pritunl - Service Error',
               message: 'Unable to establish communication with helper ' +
                 'service, try restarting computer'
-            }, function() {
+            }).then(function() {
               app.quit();
             });
           } else if (!status) {
@@ -127,11 +127,10 @@ var checkService = function(callback) {
             dialog.showMessageBox(null, {
               type: 'warning',
               buttons: ['Exit'],
-              defaultId: 1,
               title: 'Pritunl - Service Error',
               message: 'Unable to communicate with helper service, ' +
               'try restarting computer'
-            }, function() {
+            }).then(function() {
               app.quit();
             });
           }
@@ -151,8 +150,7 @@ var checkService = function(callback) {
 
 app.on('window-all-closed', function() {
   config.reload(function() {
-    if (process.platform === 'linux' ||
-        config.settings.disable_tray_icon || !tray) {
+    if (config.settings.disable_tray_icon || !tray) {
       app.quit();
     } else {
       if (app.dock) {
@@ -212,6 +210,11 @@ var openMainWin = function() {
       maxHeight = 800;
     }
 
+    var zoomFactor = 1;
+    if (process.platform === 'darwin') {
+      zoomFactor = 0.8;
+    }
+
     main = new BrowserWindow({
       title: 'Pritunl',
       icon: icon,
@@ -228,13 +231,14 @@ var openMainWin = function() {
       maxHeight: maxHeight,
       backgroundColor: '#151719',
       webPreferences: {
+        zoomFactor: zoomFactor,
         nodeIntegration: true
       }
     });
     main.maximizedPrev = null;
 
     main.on('closed', function() {
-      if (process.platform === 'linux') {
+      if (process.platform !== 'linux' && !app.dock) {
         app.quit();
       }
       main = null;
@@ -318,7 +322,7 @@ app.on('ready', function() {
           title: 'Pritunl - Service Error',
           message: 'Unable to establish communication with helper ' +
             'service, try restarting computer'
-        }, function() {
+        }).then(function() {
           app.quit();
         });
         return;
@@ -369,14 +373,12 @@ app.on('ready', function() {
 
       if (!noMain) {
         openMainWin();
-      } else if (process.platform === 'linux' ||
-          config.settings.disable_tray_icon) {
+      } else if (config.settings.disable_tray_icon) {
         app.quit();
         return;
       }
 
-      if (process.platform !== 'linux' &&
-          !config.settings.disable_tray_icon) {
+      if (!config.settings.disable_tray_icon) {
         tray = new Tray(disconnTray);
         tray.on('click', function() {
           openMainWin();
@@ -397,6 +399,14 @@ app.on('ready', function() {
               label: 'Close',
               accelerator: 'CmdOrCtrl+Q',
               role: 'close'
+            },
+            {
+              label: 'Developer Tools',
+              click: function() {
+                if (main) {
+                  main.openDevTools();
+                }
+              }
             },
             {
               label: 'Exit',
@@ -446,6 +456,10 @@ app.on('ready', function() {
         }
       ]);
       Menu.setApplicationMenu(appMenu);
+      if (tray) {
+        // required on linux 
+        tray.setContextMenu(appMenu);
+      }
 
       profile.getProfiles(function(err, prfls) {
         if (err) {

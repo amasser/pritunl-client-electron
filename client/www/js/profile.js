@@ -9,14 +9,24 @@ var logger = require('./logger.js');
 var fs = require('fs');
 var childProcess = require('child_process');
 
-function Profile(pth) {
+function Profile(systemPrfl, pth) {
   this.onUpdate = null;
 
-  this.id = path.basename(pth);
-  this.path = pth;
-  this.confPath = pth + '.conf';
-  this.ovpnPath = pth + '.ovpn';
-  this.logPath = pth + '.log';
+  this.systemPrfl = systemPrfl;
+  if (this.systemPrfl) {
+    this.id = null;
+    this.path = null;
+    this.confPath = null;
+    this.ovpnPath = null;
+    this.logPath = null;
+  } else {
+    this.id = path.basename(pth);
+    this.path = pth;
+    this.confPath = pth + '.conf';
+    this.ovpnPath = pth + '.ovpn';
+    this.logPath = pth + '.log';
+  }
+
   this.data = null;
   this.name = null;
   this.uvName = null;
@@ -31,7 +41,6 @@ function Profile(pth) {
   this.passwordMode = null;
   this.token = null;
   this.tokenTtl = null;
-  this.autostart = false;
   this.syncHosts = [];
   this.syncHash = null;
   this.syncSecret = null;
@@ -42,6 +51,10 @@ function Profile(pth) {
 }
 
 Profile.prototype.load = function(callback, waitAll) {
+  if (this.systemPrfl) {
+    throw new Error('Load on system profile');
+  }
+
   var waiter = new utils.WaitGroup();
   waiter.add(3);
 
@@ -80,7 +93,8 @@ Profile.prototype.load = function(callback, waitAll) {
     try {
       confData = JSON.parse(data);
     } catch (e) {
-      err = new errors.ParseError('profile: Failed to parse config (%s)', e);
+      err = new errors.ParseError(
+        'profile: Failed to parse config (%s)', e);
       logger.error(err);
       confData = {};
     }
@@ -187,6 +201,58 @@ Profile.prototype.load = function(callback, waitAll) {
   })
 };
 
+Profile.prototype.loadSystem = function(data) {
+  this.id = data.id;
+  this.name = data.name || this.name;
+  this.wg = data.wg || false;
+  this.organizationId = data.organization_id || null;
+  this.organization = data.organization || null;
+  this.serverId = data.server_id || null;
+  this.server = data.server || null;
+  this.userId = data.user_id || null;
+  this.user = data.user || null;
+  this.preConnectMsg = data.pre_connect_msg || null;
+  this.passwordMode = data.password_mode || null;
+  this.token = data.token || false;
+  this.tokenTtl = data.token_ttl || null;
+  this.disableReconnect = data.disable_reconnect || null;
+  this.syncHosts = data.sync_hosts || [];
+  this.syncHash = data.sync_hash || null;
+  this.syncSecret = data.sync_secret || null;
+  this.syncToken = data.sync_token || null;
+  this.serverPublicKey = data.server_public_key || null;
+  this.serverBoxPublicKey = data.server_box_public_key || null;
+
+  this.data = data.ovpn_data;
+  this.parseData();
+};
+
+Profile.prototype.exportSystem = function() {
+  return {
+    id: this.id,
+    name: this.name,
+    wg: this.wg,
+    organization_id: this.organizationId,
+    organization: this.organization,
+    server_id: this.serverId,
+    server: this.server,
+    user_id: this.userId,
+    user: this.user,
+    pre_connect_msg: this.preConnectMsg,
+    password_mode: this.passwordMode,
+    token: this.token,
+    token_ttl: this.tokenTtl,
+    disable_reconnect: this.disableReconnect,
+    sync_hosts: this.syncHosts,
+    sync_hash: this.syncHash,
+    sync_secret: this.syncSecret,
+    sync_token: this.syncToken,
+    server_public_key: this.serverPublicKey,
+    server_box_public_key: this.serverBoxPublicKey,
+    ovpn_data: this.data,
+  };
+};
+
 Profile.prototype.parseData = function() {
   var line;
   var lines = this.data.split('\n');
@@ -256,7 +322,6 @@ Profile.prototype.import = function(data) {
   this.token = data.token || false;
   this.tokenTtl = data.token_ttl || null;
   this.disableReconnect = data.disable_reconnect || null;
-  this.autostart = data.autostart || null;
   this.syncHosts = data.sync_hosts || [];
   this.syncHash = data.sync_hash || null;
   this.syncSecret = data.sync_secret || null;
@@ -300,7 +365,6 @@ Profile.prototype.exportConf = function() {
     token: this.token,
     token_ttl: this.tokenTtl,
     disable_reconnect: this.disableReconnect,
-    autostart: this.autostart,
     sync_hosts: this.syncHosts,
     sync_hash: this.syncHash,
     sync_secret: this.syncSecret,
@@ -339,7 +403,7 @@ Profile.prototype.export = function() {
     userId: this.userId || '',
     user: this.user || '',
     pre_connect_msg: this.preConnectMsg || '',
-    autostart: this.autostart ? 'On' : 'Off',
+    autostart: this.systemPrfl ? 'On' : 'Off',
     syncHosts: this.syncHosts || [],
     syncHash: this.syncHash || '',
     syncSecret: this.syncSecret || '',
@@ -438,69 +502,151 @@ Profile.prototype.getUptime = function(curTime) {
 };
 
 Profile.prototype.saveConf = function(callback) {
-  fs.writeFile(
-    this.confPath,
-    JSON.stringify(this.exportConf()),
-    {mode: 0o600},
-    function(err) {
-      if (err) {
-        err = new errors.WriteError(
-          'config: Failed to save profile conf (%s)', err);
-        logger.error(err);
-      }
-      if (this.onUpdate) {
-        this.onUpdate();
-      }
-      if (callback) {
-        callback(err);
-      }
-    }.bind(this)
-  );
+  if (this.systemPrfl) {
+    service.sprofilePut(this.exportSystem());
+  } else {
+    fs.writeFile(
+      this.confPath,
+      JSON.stringify(this.exportConf()),
+      {mode: 0o600},
+      function(err) {
+        if (err) {
+          err = new errors.WriteError(
+            'config: Failed to save profile conf (%s)', err);
+          logger.error(err);
+        }
+        if (this.onUpdate) {
+          this.onUpdate();
+        }
+        if (callback) {
+          callback(err);
+        }
+      }.bind(this)
+    );
+  }
 };
 
 Profile.prototype.saveData = function(callback) {
-  if (os.platform() === 'darwin') {
-    this.extractKey(this.data);
-  }
+  if (this.systemPrfl) {
+    service.sprofilePut(this.exportSystem());
+  } else {
+    if (os.platform() === 'darwin') {
+      this.extractKey(this.data);
+    }
 
-  fs.writeFile(
-    this.ovpnPath,
-    this.data,
-    {mode: 0o600},
-    function(err) {
-      if (err) {
-        err = new errors.WriteError(
-          'config: Failed to save profile data (%s)', err);
-        logger.error(err);
-      }
-      this.parseData();
-      if (callback) {
-        callback(err);
-      }
-    }.bind(this)
-  );
+    fs.writeFile(
+      this.ovpnPath,
+      this.data,
+      {mode: 0o600},
+      function(err) {
+        if (err) {
+          err = new errors.WriteError(
+            'config: Failed to save profile data (%s)', err);
+          logger.error(err);
+        }
+        this.parseData();
+        if (callback) {
+          callback(err);
+        }
+      }.bind(this)
+    );
+  }
 };
 
 Profile.prototype.saveLog = function(callback) {
-  fs.writeFile(
-    this.logPath,
-    this.log,
-    {mode: 0o600},
-    function(err) {
-      if (err) {
-        err = new errors.WriteError(
-          'config: Failed to save profile log (%s)', err);
-        logger.error(err);
-      }
-      if (callback) {
-        callback(err);
-      }
-    }.bind(this)
-  );
+  if (this.systemPrfl) {
+    service.sprofilePut(this.exportSystem());
+  } else {
+    if (os.platform() === 'darwin') {
+      this.extractKey(this.data);
+    }
+
+    fs.writeFile(
+      this.logPath,
+      this.log,
+      {mode: 0o600},
+      function (err) {
+        if (err) {
+          err = new errors.WriteError(
+            'config: Failed to save profile log (%s)', err);
+          logger.error(err);
+        }
+        if (callback) {
+          callback(err);
+        }
+      }.bind(this)
+    );
+  }
+};
+
+Profile.prototype.clearLog = function(callback) {
+  this.log = '';
+  if (this.systemPrfl) {
+    service.sprofilePut(this.exportSystem());
+  } else {
+    fs.writeFile(
+      this.logPath,
+      '',
+      {mode: 0o600},
+      function (err) {
+        if (err) {
+          err = new errors.WriteError(
+            'config: Failed to save profile log (%s)', err);
+          logger.error(err);
+        }
+        if (callback) {
+          callback(err);
+        }
+      }.bind(this)
+    );
+  }
+};
+
+Profile.prototype.autostartOn = function(callback) {
+  if (this.systemPrfl) {
+    callback();
+    return;
+  }
+
+  service.sprofilePut(this.exportSystem(), function(err) {
+    if (!err) {
+      this.systemPrfl = true;
+      this.delete();
+    }
+    callback();
+  }.bind(this));
+};
+
+Profile.prototype.autostartOff = function(callback) {
+  if (!this.systemPrfl) {
+    callback();
+    return;
+  }
+
+  this.path = path.join(utils.getUserDataPath(), 'profiles', this.id);
+  this.confPath = this.path + '.conf';
+  this.ovpnPath = this.path + '.ovpn';
+  this.logPath = this.path + '.log';
+
+  service.sprofileDel(this.id, function(err) {
+    if (!err) {
+      this.systemPrfl = false;
+
+      this.saveData();
+      this.saveConf();
+      this.saveLog();
+    }
+
+    callback();
+  }.bind(this));
 };
 
 Profile.prototype.delete = function() {
   this.disconnect();
+
+  if (this.systemPrfl) {
+    service.sprofileDel(this.id);
+  }
 
   if (os.platform() === 'darwin') {
     childProcess.exec(
@@ -593,7 +739,7 @@ Profile.prototype.extractKey = function() {
 };
 
 Profile.prototype.getFullData = function(callback) {
-  if (os.platform() !== 'darwin') {
+  if (this.systemPrfl || os.platform() !== 'darwin') {
     callback(this.data);
     return;
   }
@@ -888,7 +1034,7 @@ Profile.prototype.disconnect = function() {
   service.stop(this);
 };
 
-var getProfiles = function(callback, waitAll) {
+var getProfilesUser = function(callback, waitAll) {
   var root = path.join(utils.getUserDataPath(), 'profiles');
 
   var _callback = function(err, prfls) {
@@ -932,12 +1078,13 @@ var getProfiles = function(callback, waitAll) {
 
       if (!profilePaths.length) {
         _callback(null, []);
+        return;
       }
 
       for (i = 0; i < profilePaths.length; i++) {
         pth = profilePaths[i];
 
-        var prfl = new Profile(pth);
+        var prfl = new Profile(false, pth);
         profiles.push(prfl);
 
         prfl.load(function() {
@@ -945,11 +1092,70 @@ var getProfiles = function(callback, waitAll) {
 
           if (loaded >= profilePaths.length) {
             _callback(null, profiles);
+            return;
           }
         }, waitAll);
       }
     });
   });
+};
+
+var getProfilesService = function(callback, waitAll) {
+  var _callback = function(err, prfls) {
+    if (prfls) {
+      prfls = sortProfiles(prfls);
+    }
+
+    callback(err, prfls);
+  };
+
+  service.sprofilesGet(function(sprfls, err) {
+    if (err) {
+      return
+    }
+
+    var prfl;
+    var sprfl;
+    var profiles = [];
+
+    if (!sprfls.length) {
+      _callback(null, []);
+      return;
+    }
+
+    for (i = 0; i < sprfls.length; i++) {
+      sprfl = sprfls[i];
+
+      prfl = new Profile(true);
+      prfl.loadSystem(sprfl);
+
+      profiles.push(prfl);
+    }
+
+    _callback(null, profiles);
+  });
+}
+
+var getProfilesAll = function(callback, waitAll) {
+  var profiles = [];
+
+  getProfilesService(function(err, prflsService) {
+    if (err) {
+      return;
+    }
+
+    profiles = prflsService;
+
+    getProfilesUser(function(err, prflsUser) {
+      if (err) {
+        return;
+      }
+
+      profiles = profiles.concat(prflsUser);
+
+      callback(err, profiles);
+    }, waitAll);
+  }, waitAll);
 };
 
 var sortProfiles = function(prfls) {
@@ -985,6 +1191,8 @@ var sortProfiles = function(prfls) {
 
 module.exports = {
   Profile: Profile,
-  getProfiles: getProfiles,
+  getProfilesUser: getProfilesUser,
+  getProfilesService: getProfilesService,
+  getProfilesAll: getProfilesAll,
   sortProfiles: sortProfiles
 };

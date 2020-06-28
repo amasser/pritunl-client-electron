@@ -6,7 +6,8 @@ var uuid = function() {
   var id = '';
 
   for (var i = 0; i < 8; i++) {
-    id += Math.floor((1 + Math.random()) * 0x10000).toString(16).substring(1);
+    id += Math.floor((1 + Math.random()) * 0x10000).toString(
+      16).substring(1);
   }
 
   return id;
@@ -40,6 +41,7 @@ var authRequest = function(method, host, path, token, secret, jsonData,
     authString).digest('base64');
 
   var headers = {
+    'User-Agent': 'pritunl',
     'Auth-Token': token,
     'Auth-Timestamp': authTimestamp,
     'Auth-Nonce': authNonce,

@@ -4,6 +4,7 @@ package profile
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/hmac"
 	"crypto/rand"
@@ -59,18 +60,23 @@ var (
 	}{
 		m: map[string]*Profile{},
 	}
-	Ping           = time.Now()
-	clientInsecure = &http.Client{
-		Transport: &http.Transport{
-			DisableKeepAlives:   true,
-			TLSHandshakeTimeout: 10 * time.Second,
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-				MinVersion:         tls.VersionTLS12,
-				MaxVersion:         tls.VersionTLS13,
-			},
+	Ping            = time.Now()
+	clientTransport = &http.Transport{
+		DisableKeepAlives:   true,
+		TLSHandshakeTimeout: 5 * time.Second,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+			MinVersion:         tls.VersionTLS12,
+			MaxVersion:         tls.VersionTLS13,
 		},
-		Timeout: 10 * time.Second,
+	}
+	clientInsecure = &http.Client{
+		Transport: clientTransport,
+		Timeout:   10 * time.Second,
+	}
+	clientConnInsecure = &http.Client{
+		Transport: clientTransport,
+		Timeout:   45 * time.Second,
 	}
 	ipReg = regexp.MustCompile(`(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}`)
 )
@@ -83,15 +89,16 @@ type WgKeyReq struct {
 }
 
 type WgKeyBox struct {
-	DeviceId    string `json:"device_id"`
-	DeviceName  string `json:"device_name"`
-	Platform    string `json:"platform"`
-	MacAddr     string `json:"mac_addr"`
-	Token       string `json:"token"`
-	Nonce       string `json:"nonce"`
-	Password    string `json:"password"`
-	Timestamp   int64  `json:"timestamp"`
-	WgPublicKey string `json:"wg_public_key"`
+	DeviceId    string   `json:"device_id"`
+	DeviceName  string   `json:"device_name"`
+	Platform    string   `json:"platform"`
+	MacAddr     string   `json:"mac_addr"`
+	MacAddrs    []string `json:"mac_addrs"`
+	Token       string   `json:"token"`
+	Nonce       string   `json:"nonce"`
+	Password    string   `json:"password"`
+	Timestamp   int64    `json:"timestamp"`
+	WgPublicKey string   `json:"wg_public_key"`
 }
 
 type WgKeyResp struct {
@@ -108,8 +115,6 @@ type Route struct {
 }
 
 type WgConf struct {
-	Allow         bool     `json:"allow"`
-	Reason        string   `json:"reason"`
 	Address       string   `json:"address"`
 	Address6      string   `json:"address6"`
 	Hostname      string   `json:"hostname"`
@@ -141,54 +146,57 @@ type OutputData struct {
 }
 
 type Profile struct {
-	state              bool             `json:"-"`
-	stateLock          sync.Mutex       `json:"-"`
-	wgQuickLock        sync.Mutex       `json:"-"`
-	stop               bool             `json:"-"`
-	startTime          time.Time        `json:"-"`
-	authFailed         bool             `json:"-"`
-	waiters            []chan bool      `json:"-"`
-	remPaths           []string         `json:"-"`
-	wgPath             string           `json:"-"`
-	wgQuickPath        string           `json:"-"`
-	wgConfPth          string           `json:"-"`
-	wgHandshake        int              `json:"-"`
-	wgServerPublicKey  string           `json:"-"`
-	cmd                *exec.Cmd        `json:"-"`
-	intf               *utils.Interface `json:"-"`
-	lastAuthErr        time.Time        `json:"-"`
-	token              *token.Token     `json:"-"`
-	Id                 string           `json:"id"`
-	Mode               string           `json:"mode"`
-	PortWg             int              `json:"port_wg"`
-	OrgId              string           `json:"-"`
-	UserId             string           `json:"-"`
-	ServerId           string           `json:"-"`
-	SyncToken          string           `json:"-"`
-	SyncSecret         string           `json:"-"`
-	PrivateKeyWg       string           `json:"-"`
-	PublicKeyWg        string           `json:"-"`
-	PrivateKey         string           `json:"-"`
-	DeviceId           string           `json:"-"`
-	DeviceName         string           `json:"-"`
-	Data               string           `json:"-"`
-	Username           string           `json:"-"`
-	Password           string           `json:"-"`
-	ServerPublicKey    string           `json:"-"`
-	ServerBoxPublicKey string           `json:"-"`
-	TokenTtl           int              `json:"-"`
-	Iface              string           `json:"iface"`
-	Tuniface           string           `json:"tun_iface"`
-	Routes             []*Route         `json:"routes'"`
-	Routes6            []*Route         `json:"routes6'"`
-	Reconnect          bool             `json:"reconnect"`
-	Status             string           `json:"status"`
-	Timestamp          int64            `json:"timestamp"`
-	GatewayAddr        string           `json:"gateway_addr"`
-	GatewayAddr6       string           `json:"gateway_addr6"`
-	ServerAddr         string           `json:"server_addr"`
-	ClientAddr         string           `json:"client_addr"`
-	MacAddr            string           `json:"mac_addr"`
+	state              bool               `json:"-"`
+	stateLock          sync.Mutex         `json:"-"`
+	wgQuickLock        sync.Mutex         `json:"-"`
+	connected          bool               `json:"-"`
+	stop               bool               `json:"-"`
+	startTime          time.Time          `json:"-"`
+	authFailed         bool               `json:"-"`
+	waiters            []chan bool        `json:"-"`
+	remPaths           []string           `json:"-"`
+	wgPath             string             `json:"-"`
+	wgQuickPath        string             `json:"-"`
+	wgConfPth          string             `json:"-"`
+	wgHandshake        int                `json:"-"`
+	wgServerPublicKey  string             `json:"-"`
+	wgReqCancel        context.CancelFunc `json:"-"`
+	cmd                *exec.Cmd          `json:"-"`
+	intf               *utils.Interface   `json:"-"`
+	lastAuthErr        time.Time          `json:"-"`
+	token              *token.Token       `json:"-"`
+	Id                 string             `json:"id"`
+	Mode               string             `json:"mode"`
+	PortWg             int                `json:"port_wg"`
+	OrgId              string             `json:"-"`
+	UserId             string             `json:"-"`
+	ServerId           string             `json:"-"`
+	SyncToken          string             `json:"-"`
+	SyncSecret         string             `json:"-"`
+	PrivateKeyWg       string             `json:"-"`
+	PublicKeyWg        string             `json:"-"`
+	PrivateKey         string             `json:"-"`
+	DeviceId           string             `json:"-"`
+	DeviceName         string             `json:"-"`
+	Data               string             `json:"-"`
+	Username           string             `json:"-"`
+	Password           string             `json:"-"`
+	ServerPublicKey    string             `json:"-"`
+	ServerBoxPublicKey string             `json:"-"`
+	TokenTtl           int                `json:"-"`
+	Iface              string             `json:"iface"`
+	Tuniface           string             `json:"tun_iface"`
+	Routes             []*Route           `json:"routes'"`
+	Routes6            []*Route           `json:"routes6'"`
+	Reconnect          bool               `json:"reconnect"`
+	Status             string             `json:"status"`
+	Timestamp          int64              `json:"timestamp"`
+	GatewayAddr        string             `json:"gateway_addr"`
+	GatewayAddr6       string             `json:"gateway_addr6"`
+	ServerAddr         string             `json:"server_addr"`
+	ClientAddr         string             `json:"client_addr"`
+	MacAddr            string             `json:"mac_addr"`
+	MacAddrs           []string           `json:"mac_addrs"`
 }
 
 type AuthData struct {
@@ -661,6 +669,7 @@ func (p *Profile) parseLine(line string) {
 	p.pushOutput(line)
 
 	if strings.Contains(line, "Initialization Sequence Completed") {
+		p.connected = true
 		p.Status = "connected"
 		p.Timestamp = time.Now().Unix() - 5
 		p.update()
@@ -835,6 +844,7 @@ func (p *Profile) clearWgLinux() {
 		utils.ExecOutputLogged(
 			[]string{
 				"does not exist",
+				"is not a",
 			},
 			p.wgQuickPath,
 			"down", p.Iface,
@@ -851,6 +861,7 @@ func (p *Profile) clearWgMac() {
 			[]string{
 				"is not a",
 			},
+			"/usr/local/bin/bash",
 			p.wgQuickPath,
 			"down", p.Iface,
 		)
@@ -966,6 +977,7 @@ func (p *Profile) Copy() (prfl *Profile) {
 		ServerPublicKey:    p.ServerPublicKey,
 		ServerBoxPublicKey: p.ServerBoxPublicKey,
 		Reconnect:          p.Reconnect,
+		connected:          p.connected,
 	}
 	prfl.Init()
 
@@ -986,6 +998,11 @@ func (p *Profile) Start(timeout bool) (err error) {
 	} else {
 		err = p.startOvpn(timeout)
 	}
+
+	if p.stop {
+		err = nil
+	}
+
 	return
 }
 
@@ -1390,9 +1407,22 @@ func (p *Profile) reqWg(remote string) (wgData *WgData, err error) {
 	}
 	copy(serverPubKey[:], serverPubKeySlic)
 
-	wgToken, err := utils.RandStrComplex(16)
-	if err != nil {
-		return
+	tokn := token.Get(p.Id, p.ServerPublicKey, p.ServerBoxPublicKey)
+	p.token = tokn
+
+	authToken := ""
+	if tokn != nil {
+		err = tokn.Update()
+		if err != nil {
+			return
+		}
+
+		authToken = tokn.Token
+	} else {
+		authToken, err = utils.RandStrComplex(16)
+		if err != nil {
+			return
+		}
 	}
 
 	tokenNonce, err := utils.RandStr(16)
@@ -1421,7 +1451,8 @@ func (p *Profile) reqWg(remote string) (wgData *WgData, err error) {
 		DeviceName:  p.DeviceName,
 		Platform:    platform,
 		MacAddr:     p.MacAddr,
-		Token:       wgToken,
+		MacAddrs:    p.MacAddrs,
+		Token:       authToken,
 		Nonce:       tokenNonce,
 		Password:    p.Password,
 		Timestamp:   time.Now().Unix(),
@@ -1535,7 +1566,10 @@ func (p *Profile) reqWg(remote string) (wgData *WgData, err error) {
 		Path:   reqPath,
 	}
 
-	req, err := http.NewRequest(
+	conx, cancel := context.WithCancel(context.Background())
+
+	req, err := http.NewRequestWithContext(
+		conx,
 		"POST",
 		u.String(),
 		bytes.NewBuffer(wgReqData),
@@ -1577,7 +1611,8 @@ func (p *Profile) reqWg(remote string) (wgData *WgData, err error) {
 	req.Header.Set("Auth-Nonce", authNonce)
 	req.Header.Set("Auth-Signature", sig)
 
-	res, err := clientInsecure.Do(req)
+	p.wgReqCancel = cancel
+	res, err := clientConnInsecure.Do(req)
 	if err != nil {
 		err = &errortypes.RequestError{
 			errors.Wrap(err, "profile: Request put error"),
@@ -1585,6 +1620,7 @@ func (p *Profile) reqWg(remote string) (wgData *WgData, err error) {
 		return
 	}
 	defer res.Body.Close()
+	p.wgReqCancel = nil
 
 	if res.StatusCode != 200 {
 		err = &errortypes.RequestError{
@@ -1657,7 +1693,9 @@ func (p *Profile) reqWg(remote string) (wgData *WgData, err error) {
 	return
 }
 
-func (p *Profile) pingWg(remote string) (wgData *WgPingData, err error) {
+func (p *Profile) pingWg(remote string) (wgData *WgPingData, retry bool,
+	err error) {
+
 	if p.ServerBoxPublicKey == "" {
 		err = &errortypes.ReadError{
 			errors.Wrap(err, "profile: Server box public key not set"),
@@ -1697,6 +1735,7 @@ func (p *Profile) pingWg(remote string) (wgData *WgPingData, err error) {
 		DeviceName:  p.DeviceName,
 		Platform:    platform,
 		MacAddr:     p.MacAddr,
+		MacAddrs:    p.MacAddrs,
 		Timestamp:   time.Now().Unix(),
 		WgPublicKey: p.PublicKeyWg,
 	}
@@ -1860,6 +1899,10 @@ func (p *Profile) pingWg(remote string) (wgData *WgPingData, err error) {
 	defer res.Body.Close()
 
 	if res.StatusCode != 200 {
+		if res.StatusCode < 400 || res.StatusCode >= 500 {
+			retry = true
+		}
+
 		err = &errortypes.RequestError{
 			errors.Wrapf(err, "profile: Bad status %n code from server",
 				res.StatusCode),
@@ -2084,15 +2127,27 @@ func (p *Profile) confWgLinuxQuick() (err error) {
 	p.wgQuickLock.Lock()
 	defer p.wgQuickLock.Unlock()
 
-	_, _ = utils.ExecOutput(
-		p.wgQuickPath, "down", p.Iface,
-	)
+	for i := 0; i < 3; i++ {
+		_, _ = utils.ExecOutput(
+			p.wgQuickPath, "down", p.Iface,
+		)
 
-	_, err = utils.ExecOutputLogged(
-		nil,
-		p.wgQuickPath,
-		"up", p.Iface,
-	)
+		if i == 0 {
+			time.Sleep(100 * time.Millisecond)
+		} else {
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		_, err = utils.ExecOutputLogged(
+			nil,
+			p.wgQuickPath,
+			"up", p.Iface,
+		)
+		if err == nil {
+			break
+		}
+	}
+
 	if err != nil {
 		return
 	}
@@ -2104,15 +2159,29 @@ func (p *Profile) confWgMac() (err error) {
 	p.wgQuickLock.Lock()
 	defer p.wgQuickLock.Unlock()
 
-	_, _ = utils.ExecOutput(
-		p.wgQuickPath, "down", p.Iface,
-	)
+	output := ""
+	for i := 0; i < 3; i++ {
+		_, _ = utils.ExecOutput(
+			"/usr/local/bin/bash", p.wgQuickPath, "down", p.Iface,
+		)
 
-	output, err := utils.ExecOutputLogged(
-		nil,
-		p.wgQuickPath,
-		"up", p.Iface,
-	)
+		if i == 0 {
+			time.Sleep(100 * time.Millisecond)
+		} else {
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		output, err = utils.ExecOutputLogged(
+			nil,
+			"/usr/local/bin/bash",
+			p.wgQuickPath,
+			"up", p.Iface,
+		)
+		if err == nil {
+			break
+		}
+	}
+
 	if err != nil {
 		return
 	}
@@ -2139,21 +2208,33 @@ func (p *Profile) confWgMac() (err error) {
 }
 
 func (p *Profile) confWgWin() (err error) {
-	p.wgQuickLock.Lock()
-	_, _ = utils.ExecOutput(
-		"sc.exe", "stop", fmt.Sprintf("WireGuardTunnel$%s", p.Iface),
-	)
-	time.Sleep(100 * time.Millisecond)
-	_, _ = utils.ExecOutput(
-		"sc.exe", "delete", fmt.Sprintf("WireGuardTunnel$%s", p.Iface),
-	)
-	p.wgQuickLock.Unlock()
+	for i := 0; i < 3; i++ {
+		p.wgQuickLock.Lock()
+		_, _ = utils.ExecOutput(
+			"sc.exe", "stop", fmt.Sprintf("WireGuardTunnel$%s", p.Iface),
+		)
+		time.Sleep(100 * time.Millisecond)
+		_, _ = utils.ExecOutput(
+			"sc.exe", "delete", fmt.Sprintf("WireGuardTunnel$%s", p.Iface),
+		)
+		p.wgQuickLock.Unlock()
 
-	_, err = utils.ExecOutputLogged(
-		nil,
-		WgWinPath,
-		"/installtunnelservice", p.wgConfPth,
-	)
+		if i == 0 {
+			time.Sleep(100 * time.Millisecond)
+		} else {
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		_, err = utils.ExecOutputLogged(
+			nil,
+			WgWinPath,
+			"/installtunnelservice", p.wgConfPth,
+		)
+		if err == nil {
+			break
+		}
+	}
+
 	if err != nil {
 		return
 	}
@@ -2299,6 +2380,7 @@ func (p *Profile) watchWg() {
 		}
 
 		if p.wgHandshake != 0 {
+			p.connected = true
 			p.Status = "connected"
 			p.Timestamp = time.Now().Unix() - 5
 			p.update()
@@ -2331,7 +2413,17 @@ func (p *Profile) watchWg() {
 			time.Sleep(1 * time.Second)
 		}
 
-		data, err := p.pingWg(p.GatewayAddr)
+		var data *WgPingData
+		var retry bool
+		var err error
+		for i := 0; i < 3; i++ {
+			data, retry, err = p.pingWg(p.GatewayAddr)
+			if !retry {
+				break
+			}
+
+			time.Sleep(1 * time.Millisecond)
+		}
 		if err != nil {
 			logrus.WithFields(logrus.Fields{
 				"error": err,
@@ -2387,6 +2479,7 @@ func (p *Profile) startWg(timeout bool) (err error) {
 
 	err = p.generateWgKey()
 	if err != nil {
+		p.clearStatus(start)
 		return
 	}
 
@@ -2401,9 +2494,13 @@ func (p *Profile) startWg(timeout bool) (err error) {
 		err = &errortypes.ReadError{
 			errors.New("profile: Failed to load interfaces"),
 		}
+
+		p.clearStatus(start)
 		return
 	}
 
+	macAddr := ""
+	macAddrs := []string{}
 	for _, iface := range ifaces {
 		if iface.Flags&net.FlagUp == 0 ||
 			iface.Flags&net.FlagLoopback != 0 ||
@@ -2413,8 +2510,13 @@ func (p *Profile) startWg(timeout bool) (err error) {
 			continue
 		}
 
-		p.MacAddr = iface.HardwareAddr.String()
+		macAddr = iface.HardwareAddr.String()
+		if p.MacAddr == "" {
+			p.MacAddr = macAddr
+		}
+		macAddrs = append(macAddrs, macAddr)
 	}
+	p.MacAddrs = macAddrs
 
 	rangeKey := false
 	for _, line := range strings.Split(p.Data, "\n") {
@@ -2464,6 +2566,11 @@ func (p *Profile) startWg(timeout bool) (err error) {
 		if err == nil {
 			break
 		}
+
+		if p.stop {
+			p.clearStatus(start)
+			return
+		}
 	}
 	if err != nil {
 		evt := event.Event{
@@ -2477,11 +2584,21 @@ func (p *Profile) startWg(timeout bool) (err error) {
 		}).Error("profile: Request wg connection failed")
 		err = nil
 
+		time.Sleep(3 * time.Second)
+
+		if p.connected && !p.stop {
+			go p.restart()
+		}
 		p.clearStatus(start)
 		return
 	}
 
-	if data == nil || data.Configuration == nil {
+	if p.stop {
+		p.clearStatus(start)
+		return
+	}
+
+	if data == nil {
 		err = &errortypes.ParseError{
 			errors.Wrap(err, "profile: Request wg returned empty data"),
 		}
@@ -2505,11 +2622,25 @@ func (p *Profile) startWg(timeout bool) (err error) {
 		return
 	}
 
+	if data.Configuration == nil {
+		err = &errortypes.ParseError{
+			errors.Wrap(
+				err,
+				"profile: Request wg returned empty configuration",
+			),
+		}
+
+		p.clearStatus(start)
+		return
+	}
+
 	iface := network.InterfaceAcquire()
 	if iface == "" {
 		err = &errortypes.ReadError{
 			errors.New("profile: Failed to acquire interface"),
 		}
+
+		p.clearStatus(start)
 		return
 	}
 	p.Iface = iface
@@ -2664,6 +2795,11 @@ func (p *Profile) Stop() (err error) {
 	p.stop = true
 	p.Status = "disconnecting"
 	p.update()
+
+	cancel := p.wgReqCancel
+	if cancel != nil {
+		cancel()
+	}
 
 	diff := time.Since(p.startTime)
 	if diff < 8*time.Second {

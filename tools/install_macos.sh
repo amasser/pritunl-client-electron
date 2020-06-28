@@ -1,13 +1,20 @@
 #!/bin/bash
 set -e
 
-read -r -p "Install Pritunl Client? [y/N] " response
+APP_VER="$(curl -s https://api.github.com/repos/pritunl/pritunl-client-electron/releases/latest | python -c 'import json,sys;print(json.load(sys.stdin)["tag_name"])')"
+
+read -r -p "Install Pritunl Client v$APP_VER? [y/N] " response
 if ! [[ "$response" =~ ^([yY][eE][sS]|[yY])+$ ]]
 then
     exit
 fi
 
-APP_VER="1.0.1436.36"
+ROOT_PATH="$(pwd)/pritunl-client-electron-$APP_VER"
+function clean {
+  rm -rf "$ROOT_PATH"
+}
+
+trap clean EXIT
 
 curl -L https://github.com/pritunl/pritunl-client-electron/archive/$APP_VER.tar.gz | tar x
 cd pritunl-client-electron-$APP_VER
@@ -41,9 +48,9 @@ cp service_osx/com.pritunl.client.plist build/osx/Library/LaunchAgents
 cp openvpn_osx/openvpn build/osx/Applications/Pritunl.app/Contents/Resources/pritunl-openvpn
 
 # Files
-touch build/osx/Applications/Pritunl.app/Contents/Resources/auth
-touch build/osx/Applications/Pritunl.app/Contents/Resources/pritunl.log
-touch build/osx/Applications/Pritunl.app/Contents/Resources/pritunl.log.1
+sudo touch /var/run/pritunl_auth
+sudo touch /var/log/pritunl.log
+sudo touch /var/log/pritunl.log.1
 
 # Preinstall
 echo "###################################################"
